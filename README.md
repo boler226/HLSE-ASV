@@ -2,8 +2,6 @@
 
 Розподілена система на .NET з шаровою архітектурою (API → Application → Domain → Infrastructure), CQRS, PostgreSQL та асинхронною взаємодією через RabbitMQ (MassTransit).
 
-> ⚠️ Місця, позначені `TODO`, потрібно уточнити під ваш репозиторій (порти, імена учасників, назви файлів).
-
 ---
 
 ## Зміст
@@ -374,6 +372,3 @@ R — Responsible · A — Accountable · C — Consulted · I — Informed
 
 ---
 
-## Ліцензія
-
-`TODO`
