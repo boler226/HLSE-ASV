@@ -9,8 +9,7 @@ namespace CompanyService.Application.Queries.GetCompanyById {
         IMapper mapper
         ) : IRequestHandler<GetCompanyByIdQuery, CompanyDto> {
         public async Task<CompanyDto> Handle(GetCompanyByIdQuery request, CancellationToken cancellationToken) {
-            var company = await companyRepository.GetByIdAsync(request.id, cancellationToken);
-
+            var company = await companyRepository.GetByIdAsync(request.Id, cancellationToken);
             if (company is null)
                 throw new Exception("Company not found!");
 

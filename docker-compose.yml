@@ -1,3 +1,22 @@
+# Лаба №2: два однакових instances CompanyService + Redis + nginx (round-robin, без sticky sessions)
+
+x-company-common: &company-common
+  image: companies-service:lab2
+  pull_policy: never               # образ локальний, не тягнемо з Docker Hub
+  environment:
+    - ASPNETCORE_ENVIRONMENT=Development
+    - ConnectionStrings__PostgreSQLConnection=Host=postgres;Port=5432;Database=UserService;Username=postgres;Password=boler2020
+    - ConnectionStrings__Redis=redis:6379,abortConnect=false,connectTimeout=1000,syncTimeout=1000,asyncTimeout=1000
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - backend
+
 services:
   postgres:
     image: postgres:16
@@ -18,6 +37,19 @@ services:
     networks:
       - backend
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backend
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
@@ -27,6 +59,12 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
     networks:
       - backend
 
@@ -43,28 +81,44 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "5000:5000"
     networks:
       - backend
 
-  companies-service:
+  # ---- Instance 1 (збирає образ) ----
+  companies-service-1:
+    <<: *company-common
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
       target: companies-service
-    container_name: companies-service
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__PostgreSQLConnection=Host=postgres;Port=5432;Database=UserService;Username=postgres;Password=boler2020
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_started
+    container_name: companies-service-1
+    hostname: company-1            # => X-Instance-ID: company-1
     ports:
-      - "5001:5001"
+      - "5011:5001"                # прямий доступ для детермінованих тестів
+
+  # ---- Instance 2 (той самий образ) ----
+  companies-service-2:
+    <<: *company-common
+    container_name: companies-service-2
+    hostname: company-2            # => X-Instance-ID: company-2
+    ports:
+      - "5012:5001"
+
+  # ---- Load balancer: round-robin, БЕЗ ip_hash / sticky cookies ----
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: company-lb
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - companies-service-1
+      - companies-service-2
     networks:
       - backend
 
@@ -79,6 +133,8 @@ services:
       - ConnectionStrings__PostgreSQLConnection=Host=postgres;Port=5432;Database=UserService;Username=postgres;Password=boler2020
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       users-service:
         condition: service_started
