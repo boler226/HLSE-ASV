@@ -1,3 +1,4 @@
+using CompanyService.API.Health;
 using CompanyService.Application.Behaviors;
 using CompanyService.Application.Commands.CreateCompany;
 using CompanyService.Application.Mappings;
@@ -5,6 +6,7 @@ using CompanyService.Application.Validators;
 using CompanyService.Infrastructure.DbContext;
 using CompanyService.Infrastructure.Services;
 using FluentValidation;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,6 +19,11 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddInfrastructure(
     builder.Configuration.GetConnectionString("PostgreSQLConnection")!,
     builder.Configuration.GetConnectionString("Redis")!);
+
+// Health checks (GET /health): PostgreSQL => Unhealthy(503), Redis => Degraded(200)
+builder.Services.AddHealthChecks()
+    .AddCheck<PostgresHealthCheck>("postgres")
+    .AddCheck<RedisHealthCheck>("redis");
 
 builder.WebHost.ConfigureKestrel(options => {
     options.ListenAnyIP(5001); // HTTP
@@ -41,8 +48,7 @@ builder.Services.AddValidatorsFromAssembly(typeof(CreateCompanyValidator).Assemb
 
 var app = builder.Build();
 
-// Ідентифікація вузла: hostname контейнера (company-1 / company-2).
-// Значення читається один раз і є незмінним — це не стан бізнес-логіки.
+// Ідентифікація вузла: hostname контейнера (company-1 / company-2 / company-3).
 var instanceId = Environment.MachineName;
 app.Use(async (ctx, next) => {
     ctx.Response.OnStarting(() => {
@@ -51,6 +57,19 @@ app.Use(async (ctx, next) => {
     });
     await next();
 });
+
+// Лаба 3: штучна затримка для експерименту з асиметричним навантаженням.
+// Задається змінною середовища ARTIFICIAL_DELAY_MS (0 = вимкнено). /health не затримується.
+var delayMs = int.TryParse(Environment.GetEnvironmentVariable("ARTIFICIAL_DELAY_MS"), out var d) ? d : 0;
+if (delayMs > 0)
+{
+    app.Logger.LogWarning("Artificial delay ENABLED on {Instance}: {Delay} ms", instanceId, delayMs);
+    app.Use(async (ctx, next) => {
+        if (!ctx.Request.Path.StartsWithSegments("/health"))
+            await Task.Delay(delayMs, ctx.RequestAborted);
+        await next();
+    });
+}
 
 app.UseSwagger();
 app.UseSwaggerUI(c => {
@@ -82,4 +101,22 @@ using (var scope = app.Services.CreateScope())
 app.UseCors();
 app.UseAuthorization();
 app.MapControllers();
+
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = (ctx, report) => ctx.Response.WriteAsJsonAsync(new
+    {
+        status = report.Status.ToString(),
+        instance = instanceId,
+        totalMs = report.TotalDuration.TotalMilliseconds,
+        checks = report.Entries.ToDictionary(
+            e => e.Key,
+            e => new {
+                status = e.Value.Status.ToString(),
+                description = e.Value.Description,
+                ms = e.Value.Duration.TotalMilliseconds
+            })
+    })
+});
+
 app.Run();

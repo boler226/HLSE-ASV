@@ -1,12 +1,20 @@
-# Лаба №2: два однакових instances CompanyService + Redis + nginx (round-robin, без sticky sessions)
+# Лаба №3: горизонтальне масштабування + балансування навантаження
+# Єдина точка входу: nginx (company-lb) на :8080. Інстанси CompanyService назовні НЕ публікуються.
+#
+# Керування через змінні середовища (Windows cmd: set NAME=value):
+#   LB_ALGO   = round_robin | least_conn | weighted | ip_hash | scale_1 | scale_2   (за замовч. round_robin)
+#   DELAY_1/2/3 = штучна затримка (мс) на конкретному інстансі                       (за замовч. 0)
+#   COMPANY_CPUS = ліміт CPU на один інстанс                                         (за замовч. 1.0)
+
+x-company-env: &company-env
+  ASPNETCORE_ENVIRONMENT: "Development"
+  ConnectionStrings__PostgreSQLConnection: "Host=postgres;Port=5432;Database=UserService;Username=postgres;Password=boler2020"
+  ConnectionStrings__Redis: "redis:6379,abortConnect=false,connectTimeout=1000,syncTimeout=1000,asyncTimeout=1000"
 
 x-company-common: &company-common
   image: companies-service:lab2
-  pull_policy: never               # образ локальний, не тягнемо з Docker Hub
-  environment:
-    - ASPNETCORE_ENVIRONMENT=Development
-    - ConnectionStrings__PostgreSQLConnection=Host=postgres;Port=5432;Database=UserService;Username=postgres;Password=boler2020
-    - ConnectionStrings__Redis=redis:6379,abortConnect=false,connectTimeout=1000,syncTimeout=1000,asyncTimeout=1000
+  pull_policy: never
+  cpus: ${COMPANY_CPUS:-1.0}
   depends_on:
     postgres:
       condition: service_healthy
@@ -87,7 +95,7 @@ services:
     networks:
       - backend
 
-  # ---- Instance 1 (збирає образ) ----
+  # ---- Пул backend-інстансів: БЕЗ ports => недоступні ззовні, лише через nginx ----
   companies-service-1:
     <<: *company-common
     pull_policy: build
@@ -96,29 +104,40 @@ services:
       dockerfile: Dockerfile
       target: companies-service
     container_name: companies-service-1
-    hostname: company-1            # => X-Instance-ID: company-1
-    ports:
-      - "5011:5001"                # прямий доступ для детермінованих тестів
+    hostname: company-1
+    environment:
+      <<: *company-env
+      ARTIFICIAL_DELAY_MS: "${DELAY_1:-0}"
 
-  # ---- Instance 2 (той самий образ) ----
   companies-service-2:
     <<: *company-common
     container_name: companies-service-2
-    hostname: company-2            # => X-Instance-ID: company-2
-    ports:
-      - "5012:5001"
+    hostname: company-2
+    environment:
+      <<: *company-env
+      ARTIFICIAL_DELAY_MS: "${DELAY_2:-0}"
 
-  # ---- Load balancer: round-robin, БЕЗ ip_hash / sticky cookies ----
+  companies-service-3:
+    <<: *company-common
+    container_name: companies-service-3
+    hostname: company-3
+    environment:
+      <<: *company-env
+      ARTIFICIAL_DELAY_MS: "${DELAY_3:-0}"
+
+  # ---- Load balancer: єдина зовнішня точка входу ----
   nginx:
     image: nginx:1.27-alpine
     container_name: company-lb
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/upstreams/${LB_ALGO:-round_robin}.conf:/etc/nginx/upstream.conf:ro
     ports:
       - "8080:80"
     depends_on:
       - companies-service-1
       - companies-service-2
+      - companies-service-3
     networks:
       - backend
 
